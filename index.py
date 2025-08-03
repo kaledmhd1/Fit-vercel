@@ -1,98 +1,80 @@
 from flask import Flask, request, jsonify
 import httpx
+import threading
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-from concurrent.futures import ThreadPoolExecutor
-import threading
+import base64
 import json
-import time
 
 app = Flask(__name__)
-executor = ThreadPoolExecutor(max_workers=40)
+lock = threading.Lock()
 
-# --- تشفير UID ---
-def Encrypt_ID(x):
-    x = int(x)
-    dec = ['80', '81', '82', '83', '84', '85', '86', '87', '88', '89', '8a', '8b', '8c', '8d', '8e', '8f']
-    x = hex(x)[2:].zfill(8)
-    enc = ''.join(dec[int(x[i], 16)] for i in range(8))
-    return enc
+LIKE_API_URL = "https://new-like2.onrender.com/like"
+INFO_API_URL = "https://info-ch9ayfa.vercel.app/{}"
 
-# --- تحميل التوكنات ---
 with open("token.json", "r") as f:
-    accounts_passwords = json.load(f)
+    token_data = json.load(f)
 
-jwt_tokens_cache = {}
-liked_targets_cache = {}
-skipped_accounts = set()
+tokens_cache = {}
 
-liked_targets_lock = threading.Lock()
-cache_lock = threading.Lock()
-
-# --- تحميل التوكن ---
 def get_token(uid, password):
-    url = f"https://ffwlxd-access-jwt.vercel.app/api/get_jwt?guest_uid={uid}&guest_password={password}"
     try:
+        url = f"https://ffwlxd-access-jwt.vercel.app/api/get_jwt?guest_uid={uid}&guest_password={password}"
         r = httpx.get(url, timeout=10)
-        return r.json().get("BearerAuth")
+        return r.json().get("BearerAuth", "")
     except:
-        return None
+        return ""
 
-# --- تحديث كل التوكنات ---
-def refresh_tokens():
-    global jwt_tokens_cache
-    with cache_lock:
-        new_tokens = {}
-        for uid, password in accounts_passwords.items():
-            token = get_token(uid, password)
-            if token:
-                new_tokens[uid] = token
-        jwt_tokens_cache = new_tokens
+def encrypt_uid(uid):
+    uid = int(uid)
+    dec = ['80', '81', '82', '83', '84', '85', '86', '87', '88', '89', '8a', '8b', '8c', '8d', '8e', '8f']
+    uid_hex = hex(uid)[2:].zfill(8)
+    reversed_bytes = bytearray.fromhex(uid_hex)[::-1]
+    padded = pad(bytes(reversed_bytes), AES.block_size)
+    key = bytes.fromhex("2A57086C86EF54970C1E6EB37BFC72B1")
+    cipher = AES.new(key, AES.MODE_ECB)
+    encrypted = cipher.encrypt(padded)
+    return ''.join([dec[b >> 4] + dec[b & 0xF] for b in encrypted])
 
-# --- بدء التحديث التلقائي كل 10 دقائق ---
-def background_token_refresher():
-    while True:
-        refresh_tokens()
-        time.sleep(600)
-
-threading.Thread(target=background_token_refresher, daemon=True).start()
-
-# --- endpoint الرئيسي ---
-@app.route("/add_likes")
+@app.route("/add_likes", methods=["GET"])
 def add_likes():
     target_uid = request.args.get("uid")
     if not target_uid:
-        return jsonify({"error": "uid is required"}), 400
+        return jsonify({"error": "Missing uid"}), 400
 
-    with liked_targets_lock:
-        if target_uid in liked_targets_cache:
-            return jsonify({"message": "Already liked recently"}), 200
-        liked_targets_cache[target_uid] = True
-
-    encrypted_id = Encrypt_ID(target_uid)
-    url = "https://like-jwt-bngx.vercel.app/send_like"
+    encrypted_id = encrypt_uid(target_uid)
+    info = httpx.get(INFO_API_URL.format(target_uid)).json()
+    nickname = info.get("nickname", "unknown")
 
     results = []
 
-    def send_like(uid, token):
-        headers = {"Authorization": f"Bearer {token}"}
-        data = {"id": encrypted_id}
+    for guest_uid, password in token_data.items():
+        with lock:
+            if guest_uid not in tokens_cache:
+                tokens_cache[guest_uid] = get_token(guest_uid, password)
+
+            token = tokens_cache[guest_uid]
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {"target": encrypted_id}
         try:
-            r = httpx.post(url, headers=headers, json=data, timeout=10)
-            res = r.json()
-            stats = res.get("stats", {})
-            if stats.get("success"):
-                results.append(uid)
-        except:
-            pass
+            r = httpx.post(LIKE_API_URL, headers=headers, json=payload, timeout=10)
+            res_json = r.json()
+            status = res_json.get("stats", {})
+            results.append({
+                "guest_uid": guest_uid,
+                "success": status.get("success", 0),
+                "daily_limited_reached": status.get("daily_limited_reached", 0),
+            })
+        except Exception as e:
+            results.append({"guest_uid": guest_uid, "error": str(e)})
 
-    with cache_lock:
-        for uid, token in jwt_tokens_cache.items():
-            executor.submit(send_like, uid, token)
+    return jsonify({"target": nickname, "results": results})
 
-    return jsonify({"message": "Like process started", "target": target_uid}), 200
-
-# --- نقطة اختبار ---
-@app.route("/")
-def home():
-    return "✅ API is working"
+# لجعل Vercel يتعرف على التطبيق
+def handler(request, context):
+    return app(request, context)
