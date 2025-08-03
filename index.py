@@ -1,9 +1,10 @@
-from flask import Flask, request, jsonify, send_file
-import requests
+from fastapi import FastAPI, Request, Query
+from fastapi.responses import StreamingResponse, JSONResponse
 from PIL import Image, ImageDraw, ImageFont
+import httpx
 from io import BytesIO
 
-app = Flask(__name__)
+app = FastAPI()
 
 BASE_IMAGE_URL = "https://iili.io/39iE4rF.jpg"
 
@@ -13,22 +14,22 @@ API_KEYS = {
     "busy": False
 }
 
-def is_key_valid(api_key):
+def is_key_valid(api_key: str) -> bool:
     return API_KEYS.get(api_key, False)
 
-def fetch_data(region, uid):
+async def fetch_data(region: str, uid: str):
     url = f"https://razor-info.vercel.app/player-info?uid={uid}&region={region}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            return response.json()
-        else:
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url)
+            if response.status_code == 200:
+                return response.json()
+        except:
             return None
-    except Exception:
-        return None
 
-def overlay_images(base_image, item_ids, avatar_id=None, weapon_skin_id=None):
-    base = Image.open(BytesIO(requests.get(base_image).content)).convert("RGBA")
+async def overlay_images(item_ids, avatar_id=None, weapon_skin_id=None):
+    base_resp = await httpx.AsyncClient().get(BASE_IMAGE_URL)
+    base = Image.open(BytesIO(base_resp.content)).convert("RGBA")
     draw = ImageDraw.Draw(base)
 
     positions = [
@@ -38,59 +39,50 @@ def overlay_images(base_image, item_ids, avatar_id=None, weapon_skin_id=None):
     sizes = [(130, 130)] * len(positions)
 
     if avatar_id:
+        avatar_url = f"https://pika-ffitmes-api.vercel.app/?item_id={avatar_id}&watermark=TaitanApi&key=PikaApis"
         try:
-            avatar_url = f"https://pika-ffitmes-api.vercel.app/?item_id={avatar_id}&watermark=TaitanApi&key=PikaApis"
-            avatar = Image.open(BytesIO(requests.get(avatar_url).content)).convert("RGBA")
-            avatar = avatar.resize((130, 130), Image.LANCZOS)
-            center_x = (base.width - avatar.width) // 2
-            center_y = (base.height - avatar.height) // 2
+            avatar_resp = await httpx.AsyncClient().get(avatar_url)
+            avatar = Image.open(BytesIO(avatar_resp.content)).convert("RGBA").resize((130, 130))
+            center_x = (base.width - 130) // 2
+            center_y = (base.height - 130) // 2
             base.paste(avatar, (center_x, center_y), avatar)
 
             font = ImageFont.load_default()
-            text = "BNGX"
-            text_width, text_height = draw.textsize(text, font=font)
-            text_x = center_x + (130 - text_width) // 2
-            text_y = center_y + 130 + 5
-            draw.text((text_x, text_y), text, fill="white", font=font)
-
-        except Exception:
+            draw.text((center_x + 30, center_y + 135), "BNGX", fill="white", font=font)
+        except:
             pass
 
-    for idx, item_id in enumerate(item_ids[:6]):
+    for i, item_id in enumerate(item_ids[:6]):
         item_url = f"https://pika-ffitmes-api.vercel.app/?item_id={item_id}&watermark=TaitanApi&key=PikaApis"
         try:
-            item = Image.open(BytesIO(requests.get(item_url).content)).convert("RGBA")
-            item = item.resize(sizes[idx], Image.LANCZOS)
-            base.paste(item, positions[idx], item)
-        except Exception:
+            item_resp = await httpx.AsyncClient().get(item_url)
+            item = Image.open(BytesIO(item_resp.content)).convert("RGBA").resize((130, 130))
+            base.paste(item, positions[i], item)
+        except:
             continue
 
     if weapon_skin_id:
         try:
             weapon_url = f"https://pika-ffitmes-api.vercel.app/?item_id={weapon_skin_id}&watermark=TaitanApi&key=PikaApis"
-            weapon = Image.open(BytesIO(requests.get(weapon_url).content)).convert("RGBA")
-            weapon = weapon.resize((130, 130), Image.LANCZOS)
+            weapon_resp = await httpx.AsyncClient().get(weapon_url)
+            weapon = Image.open(BytesIO(weapon_resp.content)).convert("RGBA").resize((130, 130))
             base.paste(weapon, positions[6], weapon)
-        except Exception:
+        except:
             pass
 
-    return base
+    img_io = BytesIO()
+    base.save(img_io, 'PNG')
+    img_io.seek(0)
+    return img_io
 
-@app.route('/api', methods=['GET'])
-def generate_image():
-    region = request.args.get('region')
-    uid = request.args.get('uid')
-    api_key = request.args.get('key')
+@app.get("/api")
+async def generate_image(region: str = Query(...), uid: str = Query(...), key: str = Query(...)):
+    if not is_key_valid(key):
+        return JSONResponse({"error": "Invalid or inactive API key"}, status_code=403)
 
-    if not region or not uid or not api_key:
-        return jsonify({"error": "Missing region, uid, or key parameter"}), 400
-
-    if not is_key_valid(api_key):
-        return jsonify({"error": "Invalid or inactive API key"}), 403
-
-    data = fetch_data(region, uid)
+    data = await fetch_data(region, uid)
     if not data or "profileInfo" not in data:
-        return jsonify({"error": "Failed to fetch valid profile data"}), 500
+        return JSONResponse({"error": "Failed to fetch profile"}, status_code=500)
 
     profile = data["profileInfo"]
     item_ids = profile.get("equipedSkills", [])
@@ -102,16 +94,7 @@ def generate_image():
         weapon_skin_id = weapon_skin_raw
 
     if not item_ids or not avatar_id:
-        return jsonify({"error": "Missing equipped skills or avatar data"}), 500
+        return JSONResponse({"error": "Missing data"}, status_code=500)
 
-    try:
-        image = overlay_images(BASE_IMAGE_URL, item_ids, avatar_id, weapon_skin_id)
-        img_io = BytesIO()
-        image.save(img_io, 'PNG')
-        img_io.seek(0)
-        return send_file(img_io, mimetype='image/png')
-    except Exception as e:
-        return jsonify({"error": f"Image generation failed: {str(e)}"}), 500
-
-# Vercel handler
-handler = app
+    image_stream = await overlay_images(item_ids, avatar_id, weapon_skin_id)
+    return StreamingResponse(image_stream, media_type="image/png")
