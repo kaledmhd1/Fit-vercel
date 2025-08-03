@@ -70,7 +70,7 @@ def add_likes():
         liked_targets_cache[target_uid] = True
 
     encrypted_id = Encrypt_ID(target_uid)
-    url = "https://new-like2.onrender.com/like"
+    url = "https://like-jwt-bngx.vercel.app/send_like"
 
     results = []
 
