@@ -1,113 +1,94 @@
-from PIL import Image, ImageDraw, ImageFont
-import os
-from io import BytesIO
+from PIL import Image
 import requests
-import traceback
+from io import BytesIO
 import base64
+import traceback
 
 BASE_IMAGE_URL = "https://iili.io/39iE4rF.jpg"
-API_KEYS = {
-    "BNGX": True,
-    "20DAY": True,
-    "busy": False
-}
+API_KEYS = {"BNGX": True, "20DAY": True, "busy": False}
 
 def handler(event, context):
     try:
-        query = event.get("queryStringParameters", {}) or {}
+        query = event.get("queryStringParameters") or {}
         region = query.get("region")
         uid = query.get("uid")
-        api_key = query.get("key")
+        key = query.get("key")
 
-        if not region or not uid or not api_key:
+        if not region or not uid or not key:
             return {"statusCode": 400, "body": "Missing region, uid, or key"}
-
-        if not API_KEYS.get(api_key, False):
-            return {"statusCode": 403, "body": "Invalid or inactive API key"}
+        if not API_KEYS.get(key):
+            return {"statusCode": 403, "body": "Invalid API key"}
 
         data = fetch_data(region, uid)
         if not data or "profileInfo" not in data:
-            return {"statusCode": 500, "body": "Failed to fetch valid profile data"}
+            return {"statusCode": 500, "body": "Invalid profile data"}
 
-        profile = data["profileInfo"]
-        item_ids = profile.get("equipedSkills", [])
-        avatar_id = profile.get("avatarId")
+        prof = data["profileInfo"]
+        items = prof.get("equipedSkills", [])
+        avatar = prof.get("avatarId")
+        weapon_raw = prof.get("weaponSkinShows")
+        weapon = weapon_raw[0] if isinstance(weapon_raw, list) and weapon_raw else weapon_raw if isinstance(weapon_raw, int) else None
 
-        weapon_skin_raw = profile.get("weaponSkinShows")
-        weapon_skin_id = weapon_skin_raw[0] if isinstance(weapon_skin_raw, list) and weapon_skin_raw else None
+        if not items or not avatar:
+            return {"statusCode": 500, "body": "Missing equipedSkills or avatarId"}
 
-        if not item_ids or not avatar_id:
-            return {"statusCode": 500, "body": "Missing equipped skills or avatar data"}
-
-        image = overlay_images(BASE_IMAGE_URL, item_ids, avatar_id, weapon_skin_id)
-        buffer = BytesIO()
-        image.save(buffer, format="PNG")
-        base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        # توليد الصورة
+        img = overlay(BASE_IMAGE_URL, items, avatar, weapon)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        img64 = base64.b64encode(buf.getvalue()).decode()
 
         return {
             "statusCode": 200,
-            "headers": {
-                "Content-Type": "image/png"
-            },
-            "body": base64_image,
+            "headers": {"Content-Type": "image/png"},
+            "body": img64,
             "isBase64Encoded": True
         }
-
     except Exception:
         return {"statusCode": 500, "body": traceback.format_exc()}
 
-
 def fetch_data(region, uid):
-    url = f"https://razor-info.vercel.app/player-info?uid={uid}&region={region}"
     try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            return response.json()
-        return None
+        resp = requests.get(f"https://razor-info.vercel.app/player-info?uid={uid}&region={region}")
+        if resp.status_code == 200:
+            return resp.json()
     except:
-        return None
+        pass
+    return None
 
+def overlay(base_url, items, avatar_id, weapon_id=None):
+    resp = requests.get(base_url)
+    if resp.status_code != 200:
+        raise Exception("Failed base image")
 
-def overlay_images(base_image, item_ids, avatar_id=None, weapon_skin_id=None):
-    base_resp = requests.get(base_image)
-    if base_resp.status_code != 200:
-        raise Exception("Failed to load base image")
+    base = Image.open(BytesIO(resp.content)).convert("RGBA")
+    pos = [(485,473),(295,546),(290,40),(479,100),(550,280),(100,470),(600,50)]
+    size = (130,130)
 
-    base = Image.open(BytesIO(base_resp.content)).convert("RGBA")
+    # صورة الأفاتار
+    avat = requests.get(f"https://pika-ffitmes-api.vercel.app/?item_id={avatar_id}&watermark=TaitanApi&key=PikaApis")
+    if avat.status_code == 200:
+        avatar = Image.open(BytesIO(avat.content)).convert("RGBA").resize(size)
+        cx, cy = (base.width - size[0])//2, (base.height - size[1])//2
+        base.paste(avatar, (cx, cy), avatar)
 
-    positions = [
-        (485, 473), (295, 546), (290, 40),
-        (479, 100), (550, 280), (100, 470),
-        (600, 50)
-    ]
-    sizes = [(130, 130)] * len(positions)
-
-    if avatar_id:
-        avatar_url = f"https://pika-ffitmes-api.vercel.app/?item_id={avatar_id}&watermark=TaitanApi&key=PikaApis"
-        avatar_resp = requests.get(avatar_url)
-        if avatar_resp.status_code == 200:
-            avatar = Image.open(BytesIO(avatar_resp.content)).convert("RGBA").resize((130, 130))
-            cx = (base.width - avatar.width) // 2
-            cy = (base.height - avatar.height) // 2
-            base.paste(avatar, (cx, cy), avatar)
-
-    for i, item_id in enumerate(item_ids[:6]):
+    # العناصر
+    for i, iid in enumerate(items[:6]):
         try:
-            item_url = f"https://pika-ffitmes-api.vercel.app/?item_id={item_id}&watermark=TaitanApi&key=PikaApis"
-            item_resp = requests.get(item_url)
-            if item_resp.status_code == 200:
-                item = Image.open(BytesIO(item_resp.content)).convert("RGBA").resize(sizes[i])
-                base.paste(item, positions[i], item)
+            r = requests.get(f"https://pika-ffitmes-api.vercel.app/?item_id={iid}&watermark=TaitanApi&key=PikaApis")
+            if r.status_code == 200:
+                itm = Image.open(BytesIO(r.content)).convert("RGBA").resize(size)
+                base.paste(itm, pos[i], itm)
         except:
-            continue
+            pass
 
-    if weapon_skin_id:
+    # سكن السلاح
+    if weapon_id:
         try:
-            weapon_url = f"https://pika-ffitmes-api.vercel.app/?item_id={weapon_skin_id}&watermark=TaitanApi&key=PikaApis"
-            weapon_resp = requests.get(weapon_url)
-            if weapon_resp.status_code == 200:
-                weapon = Image.open(BytesIO(weapon_resp.content)).convert("RGBA").resize((130, 130))
-                base.paste(weapon, positions[6], weapon)
+            rw = requests.get(f"https://pika-ffitmes-api.vercel.app/?item_id={weapon_id}&watermark=TaitanApi&key=PikaApis")
+            if rw.status_code == 200:
+                wp = Image.open(BytesIO(rw.content)).convert("RGBA").resize(size)
+                base.paste(wp, pos[6], wp)
         except:
             pass
 
