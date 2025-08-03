@@ -16,17 +16,13 @@ PLAYER_INFO_URL = "https://razor-info.vercel.app/player-info"
 MAX_PARALLEL_REQUESTS = 40
 LIKE_TARGET_EXPIRY = 86400  # 24 ساعة
 
-group_accounts = [
-    {
-        "4016272811": "7C9B67FD6A47A62C04FCD7BB68EF479168B7520A3E3F4EDA1415DCCF10F46311",
-        "3686947614": "BBCB287183F61B1D6987DF3CC8F63BE5DF02497D10D61FD8A690AEA9EEC9D7C6",
-        "3231016672": "FAB40727917046A4C9792FC693690F21C75B48DC2432984960E31DF794B114C9"
-    }
-]
+# تحميل الحسابات من token.json
+with open("token.json", "r") as f:
+    accounts_passwords = json.load(f)
 
-accounts_passwords = {}
-for group in group_accounts:
-    accounts_passwords.update(group)
+# تقسيم الحسابات إلى قروبات (8 لكل مجموعة تقريبًا)
+accounts_items = list(accounts_passwords.items())
+group_accounts = [dict(accounts_items[i::8]) for i in range(8)]
 
 skipped_accounts = {}
 jwt_tokens_cache = {}
@@ -245,6 +241,6 @@ def refresh_skipped_tokens():
                         with cache_lock:
                             jwt_tokens_cache[uid] = token
 
-# Vercel entrypoint
+# Vercel handler
 def handler(environ, start_response):
     return app(environ, start_response)
