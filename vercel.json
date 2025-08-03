@@ -1,9 +1,14 @@
 {
-  "version": 2,
   "builds": [
-    { "src": "index.py", "use": "@vercel/python" }
+    {
+      "src": "index.py",
+      "use": "@vercel/python"
+    }
   ],
   "routes": [
-    { "src": "/add_likes", "dest": "index.py" }
+    {
+      "src": "/(.*)",
+      "dest": "index.py"
+    }
   ]
 }
