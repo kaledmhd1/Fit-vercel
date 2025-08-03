@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify, send_file
 import requests
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
-import os
 
 app = Flask(__name__)
 
@@ -24,10 +23,8 @@ def fetch_data(region, uid):
         if response.status_code == 200:
             return response.json()
         else:
-            print(f"[Error] Razor Info API: {response.status_code} - {response.text}")
             return None
-    except Exception as e:
-        print(f"[Exception] Failed to fetch data: {e}")
+    except Exception:
         return None
 
 def overlay_images(base_image, item_ids, avatar_id=None, weapon_skin_id=None):
@@ -35,13 +32,8 @@ def overlay_images(base_image, item_ids, avatar_id=None, weapon_skin_id=None):
     draw = ImageDraw.Draw(base)
 
     positions = [
-        (485, 473),
-        (295, 546),
-        (290, 40),
-        (479, 100),
-        (550, 280),
-        (100, 470),
-        (600, 50)
+        (485, 473), (295, 546), (290, 40),
+        (479, 100), (550, 280), (100, 470), (600, 50)
     ]
     sizes = [(130, 130)] * len(positions)
 
@@ -54,21 +46,15 @@ def overlay_images(base_image, item_ids, avatar_id=None, weapon_skin_id=None):
             center_y = (base.height - avatar.height) // 2
             base.paste(avatar, (center_x, center_y), avatar)
 
-            # محاولة تحميل arial.ttf من المجلد، وإن لم يكن موجودًا نستخدم الخط الافتراضي
-            try:
-                font_path = os.path.join(os.path.dirname(__file__), "arial.ttf")
-                font = ImageFont.truetype(font_path, 24)
-            except:
-                font = ImageFont.load_default()
-
+            font = ImageFont.load_default()
             text = "BNGX"
             text_width, text_height = draw.textsize(text, font=font)
             text_x = center_x + (130 - text_width) // 2
             text_y = center_y + 130 + 5
             draw.text((text_x, text_y), text, fill="white", font=font)
 
-        except Exception as e:
-            print(f"[Error] Loading avatar {avatar_id}: {e}")
+        except Exception:
+            pass
 
     for idx, item_id in enumerate(item_ids[:6]):
         item_url = f"https://pika-ffitmes-api.vercel.app/?item_id={item_id}&watermark=TaitanApi&key=PikaApis"
@@ -76,8 +62,7 @@ def overlay_images(base_image, item_ids, avatar_id=None, weapon_skin_id=None):
             item = Image.open(BytesIO(requests.get(item_url).content)).convert("RGBA")
             item = item.resize(sizes[idx], Image.LANCZOS)
             base.paste(item, positions[idx], item)
-        except Exception as e:
-            print(f"[Error] Loading item {item_id}: {e}")
+        except Exception:
             continue
 
     if weapon_skin_id:
@@ -86,8 +71,8 @@ def overlay_images(base_image, item_ids, avatar_id=None, weapon_skin_id=None):
             weapon = Image.open(BytesIO(requests.get(weapon_url).content)).convert("RGBA")
             weapon = weapon.resize((130, 130), Image.LANCZOS)
             base.paste(weapon, positions[6], weapon)
-        except Exception as e:
-            print(f"[Error] Loading weapon skin {weapon_skin_id}: {e}")
+        except Exception:
+            pass
 
     return base
 
@@ -112,10 +97,8 @@ def generate_image():
     avatar_id = profile.get("avatarId")
 
     weapon_skin_raw = profile.get("weaponSkinShows")
-    weapon_skin_id = None
-    if isinstance(weapon_skin_raw, list) and weapon_skin_raw:
-        weapon_skin_id = weapon_skin_raw[0]
-    elif isinstance(weapon_skin_raw, int):
+    weapon_skin_id = weapon_skin_raw[0] if isinstance(weapon_skin_raw, list) and weapon_skin_raw else None
+    if isinstance(weapon_skin_raw, int):
         weapon_skin_id = weapon_skin_raw
 
     if not item_ids or not avatar_id:
@@ -128,7 +111,6 @@ def generate_image():
         img_io.seek(0)
         return send_file(img_io, mimetype='image/png')
     except Exception as e:
-        print(f"[Exception] Error generating image: {e}")
         return jsonify({"error": f"Image generation failed: {str(e)}"}), 500
 
 # Vercel handler
